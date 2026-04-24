@@ -1,0 +1,88 @@
+# CD³-FastdLLM default configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Override any field from the command line via --key value or by passing a
+# custom YAML file with --config path/to/custom.yaml.
+
+model:
+  # HuggingFace model id for the masked-diffusion LLM.
+  # See https://huggingface.co/GSAI-ML/LLaDA-8B-Instruct
+  id: "GSAI-ML/LLaDA-8B-Instruct"
+  # Weight dtype: bfloat16 recommended for CUDA, float32 for CPU
+  dtype: "bfloat16"
+  # HuggingFace device_map strategy
+  device_map: "auto"
+  # Set to false only if the checkpoint does NOT ship custom modelling code
+  trust_remote_code: true
+
+generation:
+  # Total tokens to generate per prompt
+  gen_len: 256
+  # Number of denoising (unmasking) steps
+  num_steps: 128
+  # Block size for generate_with_dual_cache
+  block_length: 32
+  # Sampling temperature (0 = greedy argmax)
+  temperature: 0.0
+
+cd3:
+  # KL-divergence threshold (convergence if KL < tau_kl)
+  tau_kl: 0.02
+  # Entropy threshold in nats (convergence if H < tau_ent)
+  tau_ent: 2.0
+  # Number of consecutive stable steps required (hysteresis depth)
+  m: 2
+  # Minimum active tokens per batch item (prevents active set collapse)
+  k_min: 1
+
+eval:
+  # ── GSM8K ──────────────────────────────────────────────────────────────────
+  gsm8k:
+    # "test" (1319 examples) or "train" for debugging
+    split: "test"
+    # Maximum number of examples to evaluate (null = all)
+    max_examples: null
+    # Number of few-shot examples prepended to each prompt
+    num_fewshot: 5
+
+  # ── HumanEval ───────────────────────────────────────────────────────────────
+  humaneval:
+    split: "test"
+    max_examples: null
+    # Execution timeout per test case (seconds)
+    timeout: 3.0
+
+  # ── Speed ───────────────────────────────────────────────────────────────────
+  # Number of warmup runs before timing
+  num_warmup: 2
+  # Number of timed runs per configuration
+  num_runs: 5
+
+  # ── Modes to include in the benchmark table ─────────────────────────────────
+  # Each mode maps to a (variant, gating) pair:
+  #   variant: basic | prefix_cache | dual_cache
+  #   mode:    confidence | cd3
+  table_modes:
+    - name: "baseline"
+      variant: "basic"
+      mode: "confidence"
+    - name: "cache"
+      variant: "prefix_cache"
+      mode: "confidence"
+    - name: "parallel(confidence)"
+      variant: "dual_cache"
+      mode: "confidence"
+    - name: "cache+parallel"
+      variant: "dual_cache"
+      mode: "confidence"
+    - name: "cache+cd3"
+      variant: "dual_cache"
+      mode: "cd3"
+
+  # ── Generation lengths for table ─────────────────────────────────────────────
+  gen_lengths: [256, 512]
+
+output:
+  # Directory for result JSONs and the summary table
+  dir: "results"
+  # Print table to stdout after evaluation
+  print_table: true
