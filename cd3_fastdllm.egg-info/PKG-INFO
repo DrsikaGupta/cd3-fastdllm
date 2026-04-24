@@ -1,0 +1,193 @@
+Metadata-Version: 2.4
+Name: cd3_fastdllm
+Version: 0.1.0
+Summary: Convergence-Driven Diffusion Decoding (CD³) on top of LLaDA/Fast-dLLM
+License: MIT
+Project-URL: Homepage, https://github.com/DrsikaGupta/cd3-fastdllm
+Project-URL: Issues, https://github.com/DrsikaGupta/cd3-fastdllm/issues
+Keywords: diffusion,language model,decoding,convergence,LLaDA,Fast-dLLM
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.1
+Requires-Dist: transformers>=4.41
+Requires-Dist: datasets>=2.19
+Requires-Dist: evaluate>=0.4
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tqdm>=4.66
+Requires-Dist: accelerate>=0.30
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov>=4.1; extra == "dev"
+Provides-Extra: code-eval
+Requires-Dist: evaluate[evaluator]>=0.4; extra == "code-eval"
+
+# CD³-FastdLLM
+
+> **Convergence-Driven Diffusion Decoding (CD³)** on top of LLaDA / Fast-dLLM-style masked-diffusion language models.
+
+CD³ accelerates iterative masked-diffusion generation by *locking in* token positions that have already converged across denoising steps—using a combination of KL divergence, entropy, argmax-flip detection, and hysteresis—without sacrificing output quality.
+
+---
+
+## Repository layout
+
+```
+cd3-fastdllm/
+├── cd3_fastdllm/
+│   ├── decoding/
+│   │   ├── cd3.py          # CD³ state + active mask (rule-based gating)
+│   │   ├── confidence.py   # Confidence scoring utilities (baseline gating)
+│   │   └── generation.py   # generate / generate_with_prefix_cache /
+│   │                       #   generate_with_dual_cache
+│   ├── models/
+│   │   └── load_model.py   # Load LLaDAModelLM + tokenizer from HuggingFace
+│   ├── data/
+│   │   ├── gsm8k.py        # GSM8K dataset loader
+│   │   ├── humaneval.py    # HumanEval dataset loader
+│   │   └── prompts.py      # 5-shot / 0-shot prompt builders
+│   └── eval/
+│       ├── gsm8k_eval.py   # Accuracy (extract #### number)
+│       └── humaneval_eval.py  # pass@1 via evaluate:code_eval
+├── scripts/
+│   ├── run_gsm8k.py        # GSM8K evaluation
+│   ├── run_humaneval.py    # HumanEval evaluation
+│   └── run_table.py        # Reproduce paper table (all modes × gen lengths)
+├── configs/
+│   └── default.yaml        # Default config (model, generation, CD³, eval)
+├── tests/
+│   └── test_smoke.py       # Unit / smoke tests (no model download required)
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+## Quick start
+
+### 1. Install
+
+```bash
+git clone https://github.com/DrsikaGupta/cd3-fastdllm.git
+cd cd3-fastdllm
+pip install -e ".[dev]"
+```
+
+### 2. Run smoke tests (no model required)
+
+```bash
+pytest tests/test_smoke.py -v
+```
+
+### 3. Run GSM8K evaluation
+
+```bash
+python scripts/run_gsm8k.py \
+    --config configs/default.yaml \
+    --mode cd3 \
+    --variant dual_cache \
+    --max-examples 100
+```
+
+### 4. Run HumanEval evaluation
+
+```bash
+# Code execution requires acknowledgement:
+python scripts/run_humaneval.py \
+    --config configs/default.yaml \
+    --allow-code-eval \
+    --mode cd3 \
+    --max-examples 50
+```
+
+### 5. Reproduce the benchmark table
+
+```bash
+python scripts/run_table.py \
+    --config configs/default.yaml \
+    --allow-code-eval \
+    --max-gsm8k 200 \
+    --max-humaneval 50 \
+    --gen-lengths 256 512
+```
+
+---
+
+## Generation modes
+
+| Name | `variant` | `mode` | Description |
+|---|---|---|---|
+| baseline | `basic` | `confidence` | Vanilla iterative denoising, no cache |
+| cache | `prefix_cache` | `confidence` | Prefix KV cache only |
+| parallel(confidence) | `dual_cache` | `confidence` | Block-wise dual cache, confidence gating |
+| cache+parallel | `dual_cache` | `confidence` | Same as above (alias) |
+| **cache+cd3** | `dual_cache` | `cd3` | Block-wise dual cache + **CD³ gating** |
+
+---
+
+## CD³ gating algorithm
+
+At each denoising step, for each block position `(b, t)`:
+
+1. **KL divergence**: `KL(p_s ‖ p_{s−1})` – measures distribution shift.
+2. **Entropy**: `H(p_s)` – measures prediction uncertainty.
+3. **Flip**: whether `argmax(p_s) ≠ argmax(p_{s−1})`.
+4. **Hysteresis**: position is `converged_now` if `KL < τ_kl AND H < τ_ent AND ¬flip AND ¬masked`.
+5. Increment `stable_count`; reset to 0 if not `converged_now`.
+6. Position is **converged** when `stable_count ≥ m`.
+7. **Active mask** = `¬converged OR is_masked` (masked tokens always processed).
+8. **K_min**: at least `k_min` positions per batch item remain active.
+
+The `transfer_index` (tokens to unmask this step) is restricted to active masked positions.
+
+---
+
+## Configuration
+
+Edit `configs/default.yaml` to change:
+
+- **Model**: `model.id` (default: `GSAI-ML/LLaDA-8B-Instruct`)
+- **Generation**: `gen_len`, `num_steps`, `block_length`, `temperature`
+- **CD³ thresholds**: `cd3.tau_kl`, `cd3.tau_ent`, `cd3.m`, `cd3.k_min`
+- **Eval**: `eval.gsm8k.max_examples`, `eval.humaneval.max_examples`
+
+---
+
+## Requirements
+
+- Python ≥ 3.10
+- PyTorch ≥ 2.1
+- transformers ≥ 4.41
+- datasets ≥ 2.19
+- evaluate ≥ 0.4
+- pyyaml ≥ 6.0
+- tqdm ≥ 4.66
+- accelerate ≥ 0.30
+- CUDA GPU recommended (defaults to `bfloat16` on CUDA, `float32` on CPU)
+
+---
+
+## Citation
+
+If you use this code in your research, please cite the underlying LLaDA and Fast-dLLM works:
+
+```bibtex
+@article{nie2025llada,
+  title={LLaDA: Large Language Diffusion with mAsking},
+  author={Nie, Shen and others},
+  year={2025}
+}
+```
+
+---
+
+## License
+
+MIT
